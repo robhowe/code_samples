@@ -1,0 +1,252 @@
+<?php
+/**
+ * fdvegan.install
+ *
+ * Implement hook_schema(), hook_install() & hook_uninstall() for module fdvegan.
+ * Perform table create/delete actions to set up the site for the fdvegan module.
+ * Documented at:  https://api.drupal.org/api/drupal/modules%21system%21system.api.php/function/hook_schema/7
+ *           and:  https://api.drupal.org/api/drupal/includes%21database%21schema.inc/group/schemaapi/7
+ *
+ * PHP version 5.6
+ *
+ * @category   Install
+ * @package    fdvegan
+ * @author     Rob Howe <rob@robhowe.com>
+ * @copyright  2015-2016 Rob Howe
+ * @license    This file is proprietary and subject to the terms defined in file LICENSE.txt
+ * @version    Bitbucket via git: $Id$
+ * @link       http://fivedegreevegan.aprojects.org
+ * @see        fdvegan.module for related hook_enable() implementation.
+ * @since      version 0.2
+ */
+
+
+/*
+--
+-- Useful queries
+--
+
+SELECT p.person_id, p.tmdbid, p.full_name, p.gender,
+           GROUP_CONCAT(DISTINCT t.tag_name) AS tags,
+           GROUP_CONCAT(DISTINCT m.title) AS movies
+  FROM dr_fdvegan_person p
+  LEFT JOIN dr_fdvegan_cast_list cl USING (person_id)
+  LEFT JOIN dr_fdvegan_movie m USING (movie_id)
+  LEFT JOIN dr_fdvegan_person_tag pt USING (person_id)
+  LEFT JOIN dr_fdvegan_tag t USING (tag_id)
+ WHERE p.full_name = 'Natalie Portman';
+
+SELECT person_id, tmdbid, full_name, gender,
+       (SELECT GROUP_CONCAT(t.tag_name)
+          FROM dr_fdvegan_person p
+          LEFT JOIN dr_fdvegan_person_tag pt USING (person_id)
+          LEFT JOIN dr_fdvegan_tag t USING (tag_id)
+         WHERE person_id = t1.person_id
+        ) AS tags,
+       (SELECT GROUP_CONCAT(m.title)
+          FROM dr_fdvegan_person p
+          LEFT JOIN dr_fdvegan_cast_list cl USING (person_id)
+          LEFT JOIN dr_fdvegan_movie m USING (movie_id)
+         WHERE person_id = t1.person_id
+        ) AS movies
+  FROM 
+(SELECT  p.person_id, p.tmdbid, p.full_name, p.gender
+  FROM dr_fdvegan_person p
+) t1;
+
+SELECT m.release_date `Release Date`, m.title `Movie`,
+       GROUP_CONCAT(p.full_name) `Level 1 Vegans`,
+       COUNT(cl.movie_id) `# Level 1 Vegans`
+  FROM dr_fdvegan_cast_list cl
+  LEFT JOIN dr_fdvegan_movie m ON m.movie_id = cl.movie_id
+  LEFT JOIN dr_fdvegan_person p ON p.person_id = cl.person_id
+ GROUP BY cl.movie_id HAVING `# Level 1 Vegans` > 1
+ ORDER BY `# Level 1 Vegans` DESC;
+
+SELECT m.release_date `Release Date`, p.full_name `Actor`,
+       GROUP_CONCAT(m.title) `Level 1 Movies`,
+       COUNT(cl.movie_id) `# Level 1 Movies`
+  FROM dr_fdvegan_cast_list cl
+  LEFT JOIN dr_fdvegan_person p ON p.person_id = cl.person_id
+  LEFT JOIN dr_fdvegan_movie m ON m.movie_id = cl.movie_id
+ GROUP BY cl.person_id HAVING `# Level 1 Movies` > 1
+ ORDER BY `# Level 1 Movies` DESC;
+
+-- To find a Level 1 connection between 2 actors:
+SELECT m.release_date `Release Date`, m.title `Movie`
+  FROM dr_fdvegan_cast_list cl
+  LEFT JOIN dr_fdvegan_movie m ON m.movie_id = cl.movie_id
+  LEFT JOIN dr_fdvegan_person p ON p.person_id = cl.person_id
+ WHERE p.full_name = 'Alec Baldwin'
+   AND m.movie_id
+    IN (SELECT cl2.movie_id
+          FROM dr_fdvegan_cast_list cl2
+          LEFT JOIN dr_fdvegan_person p2 ON p2.person_id = cl2.person_id
+         WHERE p2.full_name = 'Woody Harrelson'
+       );
+
+*/
+
+
+/**
+ * Implementation of hook_schema().
+ *
+ * For a good list of field types and sizes, see:  https://www.drupal.org/node/159605
+ */
+function fdvegan_schema() {
+    $schema = array();
+
+    // "fdvegan_person" table specification.
+    $schema['fdvegan_person'] = array(
+        'description' => 'Stores actor and actress data.',
+        'fields' => array(
+            'person_id' => array(
+                'description' => t('Primary Key: Unique person ID.'),
+                'type' => 'serial',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+            ),
+            'tmdbid' => array(
+                'description' => t('The primary id on api.themoviedb.org'),
+                'type' => 'int',
+                'unsigned' => FALSE,
+                'not null' => FALSE,
+                'default' => NULL,
+            ),
+            'full_name' => array(
+                'type' => 'varchar',
+                'length' => 255,
+                'size' => 'normal',
+                'not null' => TRUE,
+                'default' => '',
+            ),
+            'biography' => array(
+                'description' => t('Bio text.'),
+                'type'        => 'text',
+//                'length'      => 4096,
+                'size'        => 'normal',
+                'not null'    => FALSE,
+            ),
+            'created' => array(
+                'description' => t('Timestamp for when record was created.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "INSERT TRIGGER"
+            ),
+            'updated' => array(
+                'description' => t('Timestamp for when record was last updated.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => TRUE,
+//                'default' => 'CURRENT_TIMESTAMP',
+                'default' => format_date(time(), 'custom', 'Y-m-d 00:00:00'),
+                // See hook_install() for the actual "ON UPDATE" attribute
+            ),
+            'synced' => array(
+                'description' => t('Timestamp for when person was last synced from source.'),
+                'mysql_type'  => 'DATETIME',
+//                'sqlite_type' => 'VARCHAR',
+                'not null'    => FALSE,
+                'default'     => NULL,
+            ),
+        ),
+        'primary key' => array('person_id'),
+        'unique keys' => array(
+            'tmdbid'  => array('tmdbid'),
+            'full_name' => array('full_name'),
+        ),
+        'indexes' => array(
+            'tmdbid_idx'    => array('tmdbid'),
+            'full_name_idx' => array('full_name'),
+        ),
+    );  // end "fdvegan_person" table specification.
+
+
+    // other table-creation code snipped...
+
+
+    return $schema;
+}
+
+
+/**
+ * Implement hook_install().
+ *
+ * Perform actions to set up the site for the fdvegan module.
+ * Documented at:  https://api.drupal.org/api/drupal/modules%21system%21system.api.php/function/hook_install/7
+ */
+function fdvegan_install() {
+
+    //
+    // Since hook_schema() doesn't support "...ON UPDATE..." for fields, set them all up here.
+    //
+
+    // Automatically set created datetime for current timestamp upon insert
+//    $result = db_query('CREATE TRIGGER {fdvegan_person}_insert_tr BEFORE INSERT ON {fdvegan_person} FOR EACH ROW BEGIN SET NEW.created=NOW()');
+
+    // Automatically update 'updated' to current timestamp whenever a row is changed
+    $result = db_query('ALTER TABLE {fdvegan_person} MODIFY updated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+
+    // Now do all the initial DB data inserts.
+
+    // Insert list of all possible movie genres.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_genre} (genre_name, created) VALUES
+  ('Action', CURRENT_TIMESTAMP), 
+  ('Adventure', CURRENT_TIMESTAMP),
+  ('Animation', CURRENT_TIMESTAMP),
+  ('Comedy', CURRENT_TIMESTAMP),
+  ('Crime', CURRENT_TIMESTAMP),
+  ('Documentary', CURRENT_TIMESTAMP),
+  ('Drama', CURRENT_TIMESTAMP),
+  ('Family', CURRENT_TIMESTAMP),
+  ('Fantasy', CURRENT_TIMESTAMP),
+  ('History', CURRENT_TIMESTAMP),
+  ('Horror', CURRENT_TIMESTAMP),
+  ('Music', CURRENT_TIMESTAMP),
+  ('Mystery', CURRENT_TIMESTAMP),
+  ('Romance', CURRENT_TIMESTAMP),
+  ('Science Fiction', CURRENT_TIMESTAMP),
+  ('TV Movie', CURRENT_TIMESTAMP),
+  ('Thriller', CURRENT_TIMESTAMP),
+  ('War', CURRENT_TIMESTAMP),
+  ('Western', CURRENT_TIMESTAMP);
+__SQL__;
+    $result = db_query($sql);
+
+    // Insert film actors.
+    $sql = <<<__SQL__
+INSERT INTO {fdvegan_person} (`tmdbid`, `tmdb_image_path`, `imdb_id`, `full_name`, `first_name`, `middle_name`, `last_name`, `gender`, `rating`, `homepage_url`, `biography`, `birthplace`, `birthday`, `deathday`, `created`) VALUES 
+  (1893, '/kPNMpiZHsAzeQar4DiNsrekwHBU.jpg', 'nm0000729', 'Casey Affleck', 'Casey', '', 'Affleck', 'M', 3539, NULL, NULL, 'Falmouth, Massachusetts, USA', '1975-08-12', NULL, CURRENT_TIMESTAMP), 
+  (1219150, NULL, 'nm0017875', 'Grant Aleksander', 'Grant', '', 'Aleksander', 'M', 8, NULL, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP), 
+  (6736, '/oK3T60cs69BUbphRSnxhteZQh7m.jpg', 'nm0000097', 'Pamela Anderson', 'Pamela', '', 'Anderson', 'F', 2031, 'http://pamelaanderson.com/', NULL, 'Ladysmith, British Columbia, Canada', '1967-07-01', NULL, CURRENT_TIMESTAMP), 
+  (71041, '/jlJef4Sv3y1LIOfFFD7JaIQlGFJ.jpg', 'nm0946148', '"Weird Al" Yankovic', 'Al', 'Matthew', 'Yankovic', 'M', 0, NULL, NULL, 'Lynwood, California, USA', '1959-10-23', NULL, CURRENT_TIMESTAMP)
+__SQL__;
+    $result = db_query($sql);
+
+
+    // other data-insert code snipped...
+
+
+    $init_load_link = l(t('visit the initial load process page'),
+                        'init-load'
+                       );
+    $message = "fdvegan module installed.<br>You <strong>must</strong> now {$init_load_link} as an Admin to load the database.";
+    drupal_set_message(t($message), 'warning');
+}
+
+
+/**
+ * Implement hook_uninstall().
+ *
+ * Perform actions to tear down the site for the fdvegan module.
+ * Documented at:  https://api.drupal.org/api/drupal/modules%21system%21system.api.php/function/hook_uninstall/7
+ */
+function fdvegan_uninstall() {
+    /* Since hook_schema() does the table creates AND table drops, there's no schema uninstall to do here.
+     * The data inserted via fdvegan_install() will get deleted when the table is dropped.
+     */
+}
+
